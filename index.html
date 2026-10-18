@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0a131c">
+<meta name="apple-mobile-web-app-title" content="Mực nước">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Mực nước chết – AI đo sóng thân tàu</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light;--bg:#f2f5f8;--fg:#0c1a2a;--card:#fff;--mut:#5a6b7c;--ac:#0a7cff;--ok:#0e9f55;--ln:#d3dce5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#0a131c;--fg:#e8eef4;--card:#122130;--mut:#8ea1b3;--ac:#4aa3ff;--ok:#2ecc7f;--ln:#243649}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#0a131c;--fg:#e8eef4;--card:#122130;--mut:#8ea1b3;--ac:#4aa3ff;--ok:#2ecc7f;--ln:#243649}
+*{box-sizing:border-box;min-width:0}html{overflow-x:hidden}body{margin:0 auto;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,"Segoe UI",sans-serif;padding:10px;max-width:640px}
+h1{font-size:17px;margin:4px 0 8px}.card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:10px;margin-bottom:10px}
+canvas{width:100%;display:block;border-radius:10px;background:#000}#g{background:var(--card);height:110px}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+button,label.b{flex:1;min-width:30%;padding:12px 6px;border-radius:10px;border:1px solid var(--ln);background:var(--bg);color:var(--fg);font:inherit;text-align:center;cursor:pointer}
+button.p,label.p{background:var(--ac);color:#fff;border-color:var(--ac);font-weight:600}
+input[type=number]{width:100%;padding:9px;border-radius:10px;border:1px solid var(--ln);background:var(--bg);color:var(--fg);font:inherit}
+.hint{color:var(--mut);font-size:13px;margin-top:6px}.big{font-size:38px;font-weight:700;color:var(--ok);line-height:1.1}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;margin-top:8px;font-size:14px}.grid span{color:var(--mut)}video{display:none}
+</style></head><body>
+<h1>🌊 AI đo mực nước chết từ sóng va thân tàu</h1>
+<div class="card">
+<canvas id="c" width="640" height="360"></canvas>
+<video id="v" playsinline muted></video>
+<div class="row">
+<label class="b p">📁 Chọn video<input id="f" type="file" accept="video/*" hidden></label>
+<button id="cam">📷 Camera trực tiếp</button>
+</div>
+<div class="row"><button id="go">▶ Đo lại</button><button id="stop">⏹ Dừng &amp; chốt</button><button id="clr">🗑 Xóa</button></div>
+<div class="hint" id="hint">Chỉ cần chọn video – AI tự tìm mép nước, tự bám thước, tự đo và cho kết quả.</div>
+</div>
+<div class="card">
+<div class="hint" id="lab">MỰC NƯỚC CHẾT (mực nước tĩnh)</div>
+<div class="big" id="res">—</div>
+<div class="hint" id="unc">Chưa có dữ liệu</div>
+<div class="grid" id="det"></div>
+<canvas id="g" width="640" height="110"></canvas>
+<div class="row">
+<div style="flex:1 1 100%"><div class="hint">Số in trên vạch XANH LƠ (vạch số thấp nhất AI thấy), gõ đúng số trên thước, vd 10 hoặc 52</div><input id="r0" type="number" step="2" placeholder="vd: 10"></div>
+<div style="flex:1 1 100%"><div class="hint">Khoảng cách giữa 2 số liền nhau trên thước (m)</div><input id="sp" type="number" step="0.01" value="0.2"></div>
+<button id="cp">📋 Sao chép kết quả</button>
+</div>
+</div>
+<script>
+const $=i=>document.getElementById(i),V=$('v'),C=$('c'),X=C.getContext('2d',{willReadFrequently:true}),G=$('g'),GX=G.getContext('2d');
+const mean=a=>a.reduce((p,c)=>p+c,0)/a.length;
+const med=a=>{const s=[...a].sort((x,y)=>x-y),n=s.length;return n?(n%2?s[(n-1)/2]:(s[n/2-1]+s[n/2])/2):NaN};
+const say=t=>$('hint').textContent=t;
+let roi=null,rul=null,sc=.00625,run=false,data=[],y0=null,yref=null,lt=-1,cal=null,txt='',sm=[],lastF=0,ta=0;
+const OC=document.createElement('canvas'),OX=OC.getContext('2d',{willReadFrequently:true});
+function snap(){OC.width=V.videoWidth;OC.height=V.videoHeight;OX.drawImage(V,0,0)}
+function stopCam(){if(V.srcObject){V.srcObject.getTracks().forEach(t=>t.stop());V.srcObject=null}}
+window.onerror=m=>say('Lỗi: '+m);V.onerror=()=>say('Không đọc được video này. Thử file MP4/MOV khác.');
+$('f').onchange=e=>{const f=e.target.files[0];if(!f)return;stopCam();run=false;roi=rul=null;V.srcObject=null;V.src=URL.createObjectURL(f);V.muted=true;say('Đang đọc video…');
+ V.play().then(()=>setTimeout(start,300)).catch(()=>say('Không phát được video này.'))};
+$('cam').onclick=async()=>{try{stopCam();run=false;roi=rul=null;V.removeAttribute('src');V.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}},audio:false});V.muted=true;await V.play();say('Giữ máy ổn định…');setTimeout(start,1200)}catch(e){say('Không mở được camera: '+e.message)}};
+$('go').onclick=start;
+$('stop').onclick=()=>{run=false;if(!V.srcObject)V.pause();analyze(true)};
+$('clr').onclick=()=>{data=[];run=false;sm=[];$('res').textContent='—';$('unc').textContent='Đã xóa dữ liệu';$('det').innerHTML='';GX.clearRect(0,0,G.width,G.height)};
+V.onended=()=>{if(run){run=false;analyze(true)}};
+$('r0').oninput=()=>analyze(true);
+function rprof(cx,ya,yb){const x=rul.x,w=rul.w,n=yb-ya,d=cx.getImageData(x,ya,w,n).data,p=new Float32Array(n),q=new Float32Array(n);
+ for(let r=0;r<n;r++){let s=0;for(let c=0;c<w;c++)s+=d[(r*w+c)*4+2];p[r]=s/w}
+ for(let r=0;r<n;r++){let s=0,k=0;for(let j=-6;j<=6;j++){const t=r+j;if(t>=0&&t<n){s+=p[t];k++}}q[r]=p[r]-s/k}return q}
+function shift(){const L=40,c=rprof(X,rul.ya-L,rul.yb+L),n=rul.ref.length,cs=[];let b=0,bv=-1e18;
+ for(let s=-L;s<=L;s++){let v=0;for(let r=0;r<n;r++)v+=rul.ref[r]*c[r+L+s];cs.push(v);if(v>bv){bv=v;b=s}}
+ if(b>-L&&b<L){const a=cs[b+L-1],e=cs[b+L+1],dn=a-2*cs[b+L]+e;if(dn)return b+.5*(a-e)/dn}return b}
+let prevG=null,wl=[],mot=[];
+function detect2(){
+ const x=roi.x|0,y=roi.y|0,w=Math.max(4,roi.w|0),h=Math.max(16,roi.h|0),d=X.getImageData(x,y,w,h).data,rs=[],xs=[],G2=new Float32Array(w*h);
+ for(let i=0;i<w*h;i++)G2[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+ let lo=3,hi=h-4;if(y0!==null){const c=y0-y,wd=Math.max(24,h*.35);lo=Math.max(3,(c-wd)|0);hi=Math.min(h-4,(c+wd)|0)}
+ wl=[];mot=[];
+ for(let c=0;c<w-2;c+=3){const p=new Float32Array(h);for(let r=0;r<h;r++)p[r]=(G2[r*w+c]+G2[r*w+c+1]+G2[r*w+c+2])/3;
+  let b=-1,bv=10;for(let r=lo;r<=hi;r++){const g=p[r-3]-p[r+3];if(g>bv){bv=g;b=r}}
+  if(b>3&&b<h-4){const a=p[b-4]-p[b+2],e=p[b-2]-p[b+4],dn=a-2*(p[b-3]-p[b+3])+e;let s=b;if(dn)s=b+.5*(a-e)/dn;if(Math.abs(s-b)>1)s=b;rs.push(s);xs.push(c)}}
+ if(prevG&&prevG.length===G2.length)for(let r=0;r<h;r+=4)for(let c=0;c<w;c+=4)if(Math.abs(G2[r*w+c]-prevG[r*w+c])>14)mot.push([x+c,y+r]);
+ prevG=G2;
+ if(rs.length<3)return[y0!==null?y0:y+h/2,0];
+ const m=med(rs),idx=[];rs.forEach((v,k)=>{if(Math.abs(v-m)<12)idx.push(k)});
+ const ag=rs.filter(v=>Math.abs(v-m)<4).length/rs.length,raw=y+(idx.length?mean(idx.map(k=>rs[k])):m);
+ idx.forEach(k=>wl.push([x+xs[k],y+rs[k]]));
+ y0=y0===null?raw:.6*y0+.4*raw;return[raw,3*ag]}
+function readScale(B,w,h){
+ const W1=w+1,I=new Float64Array(W1*(h+1));
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++)I[(y+1)*W1+x+1]=B[y*w+x]+I[y*W1+x+1]+I[(y+1)*W1+x]-I[y*W1+x];
+ const hp=new Float32Array(w*h),R=7;
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){const x0=Math.max(0,x-R),x1=Math.min(w,x+R+1),y0=Math.max(0,y-R),y1=Math.min(h,y+R+1);
+  hp[y*w+x]=B[y*w+x]-(I[y1*W1+x1]-I[y0*W1+x1]-I[y1*W1+x0]+I[y0*W1+x0])/((x1-x0)*(y1-y0))}
+ const lab=new Uint8Array(w*h),cp=[];
+ for(let i=0;i<w*h;i++){if(hp[i]>6&&!lab[i]){const st=[i];lab[i]=1;let a=0,x0=w,x1=0,y0=h,y1=0;
+  while(st.length){const j=st.pop(),x=j%w,y=(j-x)/w;a++;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+   for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const X2=x+dx,Y2=y+dy;if(X2>=0&&X2<w&&Y2>=0&&Y2<h){const k=Y2*w+X2;if(!lab[k]&&hp[k]>6){lab[k]=1;st.push(k)}}}}
+  const bw=x1-x0+1,bh=y1-y0+1;if(a>=25&&bh>=9&&bh<=30&&bw>=3&&bw<=20)cp.push({x0,x1,a,cy:(y0+y1)/2})}}
+ cp.sort((p,q)=>p.cy-q.cy);const gr=[];
+ for(const c of cp){const g=gr[gr.length-1];if(g&&Math.abs(c.cy-g.cy)<6)g.c.push(c);else gr.push({cy:c.cy,c:[c]})}
+ const nums=[];
+ for(const g of gr){if(g.c.length<2)continue;const c=g.c.sort((p,q)=>q.a-p.a).slice(0,2).sort((p,q)=>p.x0-q.x0);
+  if(c[1].x0-c[0].x1>10)continue;nums.push({y:g.cy})}
+ nums.sort((p,q)=>q.y-p.y);if(nums.length<3)return null;
+ const dy=[];for(let i=1;i<nums.length;i++)dy.push(nums[i-1].y-nums[i].y);const mn=Math.min(...dy);
+ return{yb:nums[0].y,P:med(dy.filter(d=>d<1.5*mn)),n:nums.length}}
+function auto(){
+ if(!V.videoWidth){say('Chưa có video.');return false}
+ V.pause();snap();const W=OC.width,Hh=OC.height,im=OX.getImageData(0,0,W,Hh).data,cs=[];
+ for(let c=0;c<W;c+=4){let b=-1,bv=0;const p=new Float32Array(Hh);
+  for(let r=0;r<Hh;r++){let s=0;for(let k=0;k<3&&c+k<W;k++){const i=(r*W+c+k)*4;s+=.299*im[i]+.587*im[i+1]+.114*im[i+2]}p[r]=s/3}
+  for(let r=Math.max(4,Hh*.2|0);r<Hh*.95-4;r++){const g=(p[r-4]+p[r-3]-p[r+3]-p[r+4])/2;if(g>bv){bv=g;b=r}}
+  if(b>0)cs.push([c,b,bv])}
+ const fail=()=>{say('AI chưa thấy rõ mép nước trên thân tàu. Quay lại sao cho thấy cả thân tàu và mặt nước.');return false};
+ if(cs.length<10)return fail();
+ const t=cs.map(a=>a[2]).sort((x,y)=>x-y)[(cs.length*.6)|0],gd=cs.filter(a=>a[2]>=t),m=med(gd.map(a=>a[1])),hc=gd.filter(a=>Math.abs(a[1]-m)<30);
+ if(hc.length<5)return fail();
+ const x1=hc[0][0],x2=hc[hc.length-1][0];const ry=Math.max(0,(m-60)|0);roi={x:x1,y:ry,w:Math.max(20,x2-x1),h:Math.min(120,Hh-ry)};y0=m;prevG=null;
+ const ya=Math.max(45,(m-150)|0),yb=Math.max(ya+40,(m-50)|0),n=yb-ya,d=OX.getImageData(0,ya,W,n).data,E=new Float32Array(W),bw=14;
+ for(let c=0;c<W;c++){let rb=0;for(let r=0;r<n;r++){const i=(r*W+c)*4;rb+=d[i]-d[i+2]}
+  if(rb/n>12)for(let r=2;r<n;r++){const i=(r*W+c)*4,j=((r-2)*W+c)*4;E[c]+=Math.abs(d[i+2]-d[j+2])}}
+ let bx=0,bs=0;for(let c=0;c<W-bw;c++){let s=0;for(let k=0;k<bw;k++)s+=E[c+k];if(s>bs){bs=s;bx=c}}
+ const sp=+$('sp').value||.2;rul=null;sc=sp/32;
+ if(bs>0){rul={x:bx,w:bw,ya,yb};rul.ref=rprof(OX,ya,yb);const q=rul.ref;let best=0,bl=32;
+  for(let l=10;l<Math.min(90,n/2|0);l++){let v=0;for(let r=0;r+l<n;r++)v+=q[r]*q[r+l];if(v>best){best=v;bl=l}}sc=sp/bl}
+ cal=null;if(rul){const x0=Math.max(0,rul.x-20),x1=Math.min(W,rul.x+110),y0=Math.max(0,(m-320)|0),y1=(m-4)|0,w=x1-x0,h=y1-y0,dd=OX.getImageData(x0,y0,w,h).data,B=new Float32Array(w*h);
+  for(let i=0;i<w*h;i++)B[i]=dd[i*4+2];const rs=readScale(B,w,h);if(rs){cal={yb:y0+rs.yb,P:rs.P,n:rs.n,x0};sc=sp/rs.P}}
+ return true}
+function start(){if(!auto())return;data=[];yref=null;lt=-1;run=true;if(!V.srcObject)V.currentTime=0;V.play();
+ say((rul?'AI đang đo sóng (đường đỏ = mép nước thật, vùng xanh lơ = sóng đang chuyển động). ':'AI đang đo sóng (không thấy thước để bù rung). ')+(cal?'AI thấy '+cal.n+' vạch số; gõ SỐ IN TRÊN VẠCH XANH LƠ vào ô dưới để ra số tuyệt đối.':'Chưa nhận ra vạch số trên thước.'))}
+function step(){const t=V.srcObject?performance.now()/1000:V.currentTime;if(t>=lt&&t-lt<.03)return;lt=t;
+ const[y1,q]=detect2(),yy=y1-(rul?shift():0);if(yref===null)yref=yy;data.push([t,(yref-yy)*sc,q]);if(data.length>6000)data.shift()}
+function ext(s,th){const hi=[],lo=[];let mx=s[0],mn=s[0],d=0;
+ for(const v of s){if(v>mx)mx=v;if(v<mn)mn=v;
+  if(d>=0&&mx-v>th){hi.push(mx);d=-1;mn=v}else if(d<=0&&v-mn>th){lo.push(mn);d=1;mx=v}}
+ return{hi,lo}}
+function analyze(fin){
+ if(data.length<30)return;
+ const L=data.map(d=>d[1]),m=med(L),sg=1.4826*med(L.map(x=>Math.abs(x-m)))+1e-4;
+ const a=L.filter(x=>Math.abs(x-m)<4*sg);if(a.length<20)return;
+ const s=a.map((v,i)=>mean(a.slice(Math.max(0,i-1),i+2)));sm=s;
+ const mu=mean(s),sd=Math.sqrt(mean(s.map(v=>(v-mu)**2))),th=Math.max(.3*sd,.002),{hi,lo}=ext(s,th);
+ const so=[...s].sort((x,y)=>x-y),k=Math.floor(.1*so.length),M1=mean(so.slice(k,so.length-k)),M3=med(s),Ms=[M1,M3];
+ let M2=null;if(hi.length>1&&lo.length>1){M2=(mean(hi)+mean(lo))/2;Ms.push(M2)}
+ const F=med(Ms),Nw=Math.min(hi.length,lo.length),u=sd/Math.sqrt(Math.max(1,Nw));lastF=F;
+ const Hh=Nw?mean(hi)-mean(lo):0,T=Nw?(data[data.length-1][0]-data[0][0])/Nw:0,q=mean(data.slice(-100).map(d=>d[2]));
+ const conf=Math.round(100*Math.min(1,Nw/10)*Math.min(1,q/2.5));
+ const nv=$('r0').value===''?null:+$('r0').value,ab=nv!==null&&!!cal&&yref!==null,R0=ab?nv/10+(cal.yb-yref)*sc:0,mf=x=>{const c=Math.round(x*100);return Math.floor(c/100)+'m'+String(c%100).padStart(2,'0')},f=v=>ab?mf(v+R0):(v>=0?'+':'')+(v*100).toFixed(1)+' cm';
+ $('lab').textContent=ab?'MỰC NƯỚC CHẾT – số đọc trên thước (m cm)':'MỰC NƯỚC CHẾT so với mép nước giây đầu (gõ số ở vạch xanh lơ vào ô dưới để ra số tuyệt đối)';
+ $('res').textContent=f(F);$('unc').textContent='± '+(u*100).toFixed(1)+' cm • độ tin cậy '+conf+'%'+(conf<50?' (cần video dài hơn, nhiều sóng hơn)':'');
+ $('det').innerHTML=`<div><span>TB cắt 10%</span> ${f(M1)}</div><div><span>Trung vị</span> ${f(M3)}</div><div><span>(đỉnh+đáy)/2</span> ${M2===null?'—':f(M2)}</div><div><span>Số sóng</span> ${Nw}</div><div><span>Biên độ sóng H</span> ${(Hh*100).toFixed(1)} cm</div><div><span>Chu kỳ T</span> ${T.toFixed(2)} s</div>`;
+ txt=`Mực nước chết: ${f(F)} (±${(u*100).toFixed(1)} cm) | H=${(Hh*100).toFixed(1)} cm, T=${T.toFixed(2)} s, ${Nw} sóng, tin cậy ${conf}%`;
+ if(fin)say('Đã chốt kết quả.');draw()}
+function draw(){const w=G.width,h=G.height;GX.clearRect(0,0,w,h);const s=sm.slice(-400);if(s.length<2)return;
+ const mn=Math.min(...s),mx=Math.max(...s),r=(mx-mn)||1,Y=v=>h-8-(v-mn)/r*(h-16),cs=getComputedStyle(document.documentElement);
+ GX.lineWidth=2;GX.strokeStyle=cs.getPropertyValue('--ac');GX.beginPath();
+ s.forEach((v,i)=>{const x=i/(s.length-1)*w;i?GX.lineTo(x,Y(v)):GX.moveTo(x,Y(v))});GX.stroke();
+ GX.strokeStyle=cs.getPropertyValue('--ok');GX.setLineDash([6,4]);GX.beginPath();GX.moveTo(0,Y(lastF));GX.lineTo(w,Y(lastF));GX.stroke();GX.setLineDash([])}
+$('cp').onclick=()=>{if(txt&&navigator.clipboard)navigator.clipboard.writeText(txt)};
+function overlay(){
+ if(rul){X.strokeStyle='#34c759';X.lineWidth=2;X.strokeRect(rul.x,rul.ya,rul.w,rul.yb-rul.ya)}
+ if(cal){X.strokeStyle='#00e5ff';X.lineWidth=3;X.beginPath();X.moveTo(cal.x0,cal.yb);X.lineTo(cal.x0+130,cal.yb);X.stroke()}
+ if(roi){X.strokeStyle='#ffd400';X.lineWidth=2;X.strokeRect(roi.x,roi.y,roi.w,roi.h)}
+ if(run){X.fillStyle='rgba(0,229,255,.35)';for(const p of mot)X.fillRect(p[0],p[1],4,4);X.strokeStyle='#ff3b30';X.lineWidth=2;X.beginPath();wl.forEach((p,i)=>i?X.lineTo(p[0],p[1]):X.moveTo(p[0],p[1]));X.stroke()}}
+function loop(){
+ if(V.videoWidth){if(C.width!==V.videoWidth){C.width=V.videoWidth;C.height=V.videoHeight}
+  X.drawImage(V,0,0);if(run&&roi){step();const n=performance.now();if(n-ta>500){ta=n;analyze()}}overlay()}
+ requestAnimationFrame(loop)}
+loop();
+</script>
+<script>
+try{if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js');
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
+</script></body></html>
